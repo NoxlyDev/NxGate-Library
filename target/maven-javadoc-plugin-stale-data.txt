@@ -1,0 +1,51 @@
+@options
+@packages
+-classpath
+'/data/data/com.termux/files/home/.m2/repository/org/json/json/20240303/json-20240303.jar'
+-encoding
+'UTF-8'
+-protected
+-source
+'8'
+-sourcepath
+'/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/src/main/java:/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/generated-sources/annotations'
+-author
+-bottom
+'Copyright &#169; 2026. All rights reserved.'
+-charset
+'UTF-8'
+-d
+'/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs'
+-docencoding
+'UTF-8'
+-doctitle
+'nxgate 1.0.4 API'
+-linkoffline
+'https://docs.oracle.com/javase/8/docs/api' '/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/javadoc-bundle-options'
+-use
+-version
+-windowtitle
+'nxgate 1.0.4 API'
+xyz.noxlydev.nxgate
+/data/data/com.termux/files/home/.m2/repository/org/json/json/20240303/json-20240303.jar = 1709478985000
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/src/main/java = 1776974772912
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/generated-sources/annotations = 1776974795576
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/element-list = 1776974839988
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/overview-tree.html = 1776974840104
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/allclasses-index.html = 1776974840160
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/allpackages-index.html = 1776974840164
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/module-search-index.js = 1776974840164
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/package-search-index.js = 1776974840168
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/type-search-index.js = 1776974840168
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/member-search-index.js = 1776974840168
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/tag-search-index.js = 1776974840168
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/index-all.html = 1776974840220
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/search.html = 1776974840224
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/index.html = 1776974840228
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/help-doc.html = 1776974840260
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/stylesheet.css = 1776974840272
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/script.js = 1776974840272
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/copy.svg = 1776974840276
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/link.svg = 1776974840276
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/search.js = 1776974840280
+/data/data/com.termux/files/home/MyProjects/nxgateJ/anu/target/apidocs/search-page.js = 1776974840284
