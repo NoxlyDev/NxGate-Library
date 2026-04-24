@@ -1,2 +1,6 @@
 xyz/noxlydev/nxgate/NxGate.class
 xyz/noxlydev/nxgate/NxGate$ValidationType.class
+xyz/noxlydev/nxgate/HardenedNxGate$Builder.class
+xyz/noxlydev/nxgate/HardenedNxGate$1.class
+xyz/noxlydev/nxgate/HardenedNxGate.class
+xyz/noxlydev/nxgate/Fingerprints.class

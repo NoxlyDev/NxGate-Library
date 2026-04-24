@@ -6,7 +6,7 @@
 
     <groupId>xyz.noxlydev.nxgate</groupId>
     <artifactId>nxgate</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.6</version>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -16,12 +16,11 @@
 
     <distributionManagement>
         <repository>
-            <id>noxly</id>
-            <name>Respark - Maven Repository</name>
-            <url>https://maven.noxlydev.xyz/releases</url>
+            <id>github</id>
+            <name>GitHub NoxlyDev Apache Maven Packages</name>
+            <url>https://maven.pkg.github.com/NoxlyDev/NxGate-Library</url>
         </repository>
     </distributionManagement>
-
 
     <dependencies>
         <!-- https://mvnrepository.com/artifact/org.json/json -->

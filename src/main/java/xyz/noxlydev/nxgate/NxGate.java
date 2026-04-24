@@ -17,19 +17,38 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 
 /**
- * A Java wrapper for communicating with LicenseGate - supports cloud and self-hosted setups.
+ * A Java wrapper for communicating with NxGate - supports cloud and self-hosted setups.
  * This class provides methods to set up license verification parameters, perform the verification,
  * and handle the responses from the verification server.
+ *
+ * <p>Additional hardening (opt-in via builder methods):
+ * <ul>
+ *   <li>{@link #withRetry(int, long)} — retry transient failures with exponential backoff.</li>
+ *   <li>{@link #withTimeout(int, int)} — connect &amp; read timeouts (avoids 30s+ hangs).</li>
+ *   <li>{@link #withTlsPinning(java.util.List)} — pin server cert SHA-256 fingerprints.</li>
+ *   <li>{@link #withMetadataAugmentation(boolean)} — auto-append machine + jar fingerprint to metadata.</li>
+ * </ul>
+ *
+ * <p>For offline grace cache + heartbeat, use the companion class {@link HardenedNxGate}.
  */
 public class NxGate {
 
     private static final String DEFAULT_SERVER = "https://api.nxgate.noxlydev.xyz";
+    private static final String LIB_VERSION = "nxgate/1.1.0";
 
     private String userId;
     private String publicRsaKey;
     private String validationServer = DEFAULT_SERVER;
     private boolean useChallenges = false;
     private boolean debug = false;
+
+    // Hardening options (all opt-in; defaults match original library behavior)
+    private int maxAttempts = 1;
+    private long initialBackoffMs = 1000L;
+    private int connectTimeoutMs = 10000;
+    private int readTimeoutMs = 10000;
+    private boolean augmentMetadata = false;
+    private java.util.List<String> pinnedSha256 = null;
 
     /**
      * Create a new NxGate instance with your user ID.
@@ -42,7 +61,8 @@ public class NxGate {
 
     /**
      * Create a new NxGate instance with your user ID and public RSA key.
-     * Using this constructor enables the use of challenges for added security (recommended for client-side verification).
+     * Using this constructor enables the use of challenges for added security
+     * (recommended for client-side verification).
      *
      * @param userId       The user ID of the license owner's NxGate account.
      * @param publicRsaKey The public RSA key of the license owner's NxGate account.
@@ -98,6 +118,63 @@ public class NxGate {
         return this;
     }
 
+    // ---------------- Hardening builder methods ----------------
+
+    /**
+     * Enable automatic retry of transient failures (CONNECTION_ERROR / SERVER_ERROR).
+     * Backoff is exponential (factor 3): e.g. attempts=3, backoff=1000ms → waits 1s, 3s.
+     *
+     * @param attempts  total attempts including the first (>=1).
+     * @param backoffMs initial backoff in milliseconds.
+     * @return The NxGate instance.
+     */
+    public NxGate withRetry(int attempts, long backoffMs) {
+        this.maxAttempts = Math.max(1, attempts);
+        this.initialBackoffMs = Math.max(0, backoffMs);
+        return this;
+    }
+
+    /**
+     * Set HTTP timeouts. Default is 10s/10s. Lower values = faster failure detection.
+     *
+     * @param connectMs connect timeout in milliseconds.
+     * @param readMs    read timeout in milliseconds.
+     * @return The NxGate instance.
+     */
+    public NxGate withTimeout(int connectMs, int readMs) {
+        this.connectTimeoutMs = connectMs;
+        this.readTimeoutMs = readMs;
+        return this;
+    }
+
+    /**
+     * When enabled, the metadata string sent to the server is augmented with
+     * {@code machineFp=...;jarFp=...} so admins can detect tampering / cloned hardware.
+     * If you also pass your own metadata, both are merged with a {@code ;} separator.
+     *
+     * @param enable whether to enable metadata augmentation.
+     * @return The NxGate instance.
+     */
+    public NxGate withMetadataAugmentation(boolean enable) {
+        this.augmentMetadata = enable;
+        return this;
+    }
+
+    /**
+     * Pin one or more server certificate SHA-256 fingerprints (hex, no colons).
+     * Connections whose leaf certificate doesn't match any pin are rejected as CONNECTION_ERROR.
+     * Defeats network MITM attacks (e.g. Burp / mitmproxy) that bypass the license check.
+     *
+     * @param sha256Fingerprints list of SHA-256 hex fingerprints to pin.
+     * @return The NxGate instance.
+     */
+    public NxGate withTlsPinning(java.util.List<String> sha256Fingerprints) {
+        this.pinnedSha256 = sha256Fingerprints;
+        return this;
+    }
+
+    // ---------------- Verify methods (original API preserved) ----------------
+
     /**
      * Verify a license key.
      *
@@ -120,7 +197,8 @@ public class NxGate {
     }
 
     /**
-     * Verify a license key with a specific scope and metadata that should be associated with the verification request.
+     * Verify a license key with a specific scope and metadata that should be associated
+     * with the verification request.
      *
      * @param licenseKey The license key to verify.
      * @param scope      The scope to verify the license key against.
@@ -128,33 +206,53 @@ public class NxGate {
      * @return The validation result.
      */
     public ValidationType verify(String licenseKey, String scope, String metadata) {
+        if (augmentMetadata) {
+            String aug = "machineFp=" + Fingerprints.machine() + ";jarFp=" + Fingerprints.callerJar();
+            metadata = (metadata == null || metadata.isEmpty()) ? aug : (metadata + ";" + aug);
+        }
+
+        long backoff = initialBackoffMs;
+        ValidationType last = ValidationType.CONNECTION_ERROR;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            last = verifyOnce(licenseKey, scope, metadata);
+            if (last != ValidationType.CONNECTION_ERROR && last != ValidationType.SERVER_ERROR) {
+                return last;
+            }
+            if (attempt < maxAttempts) {
+                try { Thread.sleep(backoff); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return last;
+                }
+                backoff *= 3;
+            }
+        }
+        return last;
+    }
+
+    private ValidationType verifyOnce(String licenseKey, String scope, String metadata) {
         try {
-            String challenge = this.useChallenges ? String.valueOf(System.currentTimeMillis()) : null;
+            String challenge = this.useChallenges
+                    ? System.currentTimeMillis() + "-" + java.util.UUID.randomUUID()
+                    : null;
             JSONObject response = requestServer(buildUrl(licenseKey, scope, metadata, challenge));
 
             if (response.has("error") || !response.has("result")) {
-                if (debug) System.out.println("Error: " + response.getString("error"));
+                if (debug) System.out.println("[NxGate] Error: " + response.optString("error", "no result"));
                 return ValidationType.SERVER_ERROR;
             }
 
-            // Non-valid response don't need a signed challenge
             if (response.has("valid") && !response.getBoolean("valid")) {
                 ValidationType result = ValidationType.valueOf(response.getString("result"));
-                if (result == ValidationType.VALID) {
-                    return ValidationType.SERVER_ERROR;
-                } else {
-                    return result;
-                }
+                return result == ValidationType.VALID ? ValidationType.SERVER_ERROR : result;
             }
 
             if (useChallenges) {
                 if (!response.has("signedChallenge")) {
-                    if (debug) System.out.println("Error: No challenge result");
+                    if (debug) System.out.println("[NxGate] No signed challenge in response");
                     return ValidationType.FAILED_CHALLENGE;
                 }
-
                 if (!verifyChallenge(challenge, response.getString("signedChallenge"))) {
-                    if (debug) System.out.println("Error: Challenge verification failed");
+                    if (debug) System.out.println("[NxGate] Challenge verification failed");
                     return ValidationType.FAILED_CHALLENGE;
                 }
             }
@@ -177,7 +275,8 @@ public class NxGate {
     }
 
     /**
-     * Verify a license key with a specific scope and return a boolean indicating whether the license key is valid.
+     * Verify a license key with a specific scope and return a boolean indicating whether
+     * the license key is valid.
      *
      * @param licenseKey The license key to verify.
      * @param scope      The scope to verify the license key against.
@@ -188,7 +287,7 @@ public class NxGate {
     }
 
     /**
-     * Verify a license key with a specific scope and metadata that should be associated with the verification request.
+     * Verify a license key with a specific scope and metadata.
      *
      * @param licenseKey The license key to verify.
      * @param scope      The scope to verify the license key against.
@@ -199,80 +298,87 @@ public class NxGate {
         return verify(licenseKey, scope, metadata) == ValidationType.VALID;
     }
 
-    private String buildUrl(String licenseKey, String scope, String metadata, String challenge) throws UnsupportedEncodingException {
-        String queryString = "";
+    // ---------------- Internals ----------------
 
-        // Add metadata and scope to url query if not null (parsed as query parameters)
+    private String buildUrl(String licenseKey, String scope, String metadata, String challenge)
+            throws UnsupportedEncodingException {
+        StringBuilder qs = new StringBuilder();
         if (metadata != null) {
-            queryString += "?metadata=" + URLEncoder.encode(metadata, StandardCharsets.UTF_8.name());
+            qs.append("?metadata=").append(URLEncoder.encode(metadata, StandardCharsets.UTF_8.name()));
         }
-
         if (scope != null) {
-            queryString += (queryString.isEmpty() ? "?" : "&") + "scope=" + URLEncoder.encode(scope, StandardCharsets.UTF_8.name());
+            qs.append(qs.length() == 0 ? "?" : "&")
+              .append("scope=").append(URLEncoder.encode(scope, StandardCharsets.UTF_8.name()));
         }
-
         if (useChallenges && challenge != null) {
-            queryString += (queryString.isEmpty() ? "?" : "&") + "challenge=" + URLEncoder.encode(challenge, StandardCharsets.UTF_8.name());
+            qs.append(qs.length() == 0 ? "?" : "&")
+              .append("challenge=").append(URLEncoder.encode(challenge, StandardCharsets.UTF_8.name()));
         }
-
-        return validationServer + "/license/" + userId + "/" + licenseKey + "/verify" + queryString;
+        return validationServer + "/license/" + userId + "/" + licenseKey + "/verify" + qs;
     }
 
     private JSONObject requestServer(String urlStr) throws IOException {
         URL url = new URL(urlStr);
         HttpURLConnection con = (HttpURLConnection) url.openConnection();
         con.setRequestMethod("GET");
-        con.setRequestProperty("User-Agent", "Mozilla/5.0");
-        con.setDoOutput(true);
+        con.setRequestProperty("User-Agent", LIB_VERSION);
+        con.setConnectTimeout(connectTimeoutMs);
+        con.setReadTimeout(readTimeoutMs);
+
+        if (pinnedSha256 != null && !pinnedSha256.isEmpty() && con instanceof javax.net.ssl.HttpsURLConnection) {
+            try {
+                javax.net.ssl.HttpsURLConnection https = (javax.net.ssl.HttpsURLConnection) con;
+                https.connect();
+                java.security.cert.Certificate[] certs = https.getServerCertificates();
+                if (certs.length == 0) throw new IOException("no server certs");
+                byte[] sha = java.security.MessageDigest.getInstance("SHA-256").digest(certs[0].getEncoded());
+                String hex = toHex(sha);
+                boolean ok = false;
+                for (String pin : pinnedSha256) {
+                    if (pin.replace(":", "").equalsIgnoreCase(hex)) { ok = true; break; }
+                }
+                if (!ok) {
+                    if (debug) System.out.println("[NxGate] TLS pin mismatch. Got " + hex);
+                    con.disconnect();
+                    throw new IOException("TLS pin mismatch");
+                }
+            } catch (java.security.GeneralSecurityException gse) {
+                con.disconnect();
+                throw new IOException(gse);
+            }
+        }
 
         int responseCode = con.getResponseCode();
         if (debug) {
-            System.out.println("\nSending request to URL : " + url);
-            System.out.println("Response Code : " + responseCode);
+            System.out.println("[NxGate] Sending request to URL : " + urlStr);
+            System.out.println("[NxGate] Response Code : " + responseCode);
         }
 
         try (BufferedReader in = new BufferedReader(new InputStreamReader(con.getInputStream()))) {
-            String inputLine;
-            StringBuilder response = new StringBuilder();
-
-            while ((inputLine = in.readLine()) != null) {
-                response.append(inputLine);
-            }
-
-            final String jsonStr = response.toString();
-
-            if (debug) {
-                System.out.println("Response: " + jsonStr);
-            }
-
-            // Parse JSON response
-            return new JSONObject(jsonStr);
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = in.readLine()) != null) sb.append(line);
+            String body = sb.toString();
+            if (debug) System.out.println("[NxGate] Response: " + body);
+            return new JSONObject(body);
         }
     }
 
     private boolean verifyChallenge(String challenge, String signedChallengeBase64) {
         try {
-            // Remove the PEM header and footer if present
             String pemHeader = "-----BEGIN PUBLIC KEY-----";
             String pemFooter = "-----END PUBLIC KEY-----";
-            String base64PublicKey = this.publicRsaKey.replace(pemHeader, "").replace(pemFooter, "").replaceAll("\\s+", ""); // Remove all whitespace (new lines, spaces, tabs)
-
-
-            // Convert Base64 encoded public key to PublicKey object
+            String base64PublicKey = this.publicRsaKey
+                    .replace(pemHeader, "").replace(pemFooter, "").replaceAll("\\s+", "");
             byte[] publicKeyBytes = Base64.getDecoder().decode(base64PublicKey);
             X509EncodedKeySpec keySpec = new X509EncodedKeySpec(publicKeyBytes);
             KeyFactory keyFactory = KeyFactory.getInstance("RSA");
             PublicKey publicKey = keyFactory.generatePublic(keySpec);
 
-            // Base64 decode the signed challenge
             byte[] signatureBytes = Base64.getDecoder().decode(signedChallengeBase64);
-
-            // Initialize a Signature object for verification
             Signature signature = Signature.getInstance("SHA256withRSA");
             signature.initVerify(publicKey);
-            signature.update(challenge.getBytes());
-
-            // Verify the signature
+            signature.update(challenge.getBytes(StandardCharsets.UTF_8));
             return signature.verify(signatureBytes);
         } catch (Exception e) {
             if (debug) e.printStackTrace();
@@ -280,37 +386,38 @@ public class NxGate {
         }
     }
 
+    static String toHex(byte[] b) {
+        StringBuilder sb = new StringBuilder(b.length * 2);
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
     /**
      * The result of a license verification.
-     * Most of these types are the same as the ones returned by the NxGate server. Check the official documentation for more information.
+     * Most of these types are the same as the ones returned by the NxGate server.
+     * Check the official documentation for more information.
      * <ul>
-     *     <li>CONNECTION_ERROR: The request to the NxGate server failed.</li>
-     *     <li>SERVER_ERROR: The NxGate server returned an invalid response.</li>
-     *     <li>FAILED_CHALLENGE: The challenge verification failed.</li>
+     *   <li>CONNECTION_ERROR: The request to the NxGate server failed.</li>
+     *   <li>SERVER_ERROR: The NxGate server returned an invalid response.</li>
+     *   <li>FAILED_CHALLENGE: The challenge verification failed.</li>
      * </ul>
      */
     public enum ValidationType {
 
-        VALID(true), NOT_FOUND, NOT_ACTIVE, EXPIRED, LICENSE_SCOPE_FAILED, IP_LIMIT_EXCEEDED, RATE_LIMIT_EXCEEDED, FAILED_CHALLENGE, SERVER_ERROR, CONNECTION_ERROR;
+        VALID(true), NOT_FOUND, NOT_ACTIVE, EXPIRED, LICENSE_SCOPE_FAILED,
+        IP_LIMIT_EXCEEDED, RATE_LIMIT_EXCEEDED, FAILED_CHALLENGE,
+        SERVER_ERROR, CONNECTION_ERROR;
 
-        ValidationType(boolean valid) {
-            this.valid = valid;
-        }
+        private final boolean valid;
 
-        ValidationType() {
-            this(false);
-        }
-
-        private boolean valid;
+        ValidationType(boolean valid) { this.valid = valid; }
+        ValidationType() { this(false); }
 
         /**
          * Returns whether the result is valid. This is true for VALID and false for all other types.
          *
          * @return Whether the result is valid.
          */
-        public boolean isValid() {
-            return valid;
-        }
-
+        public boolean isValid() { return valid; }
     }
 }
