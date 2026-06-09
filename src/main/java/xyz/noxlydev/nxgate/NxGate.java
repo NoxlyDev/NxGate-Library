@@ -18,18 +18,6 @@ import java.util.Base64;
 
 /**
  * A Java wrapper for communicating with NxGate - supports cloud and self-hosted setups.
- * This class provides methods to set up license verification parameters, perform the verification,
- * and handle the responses from the verification server.
- *
- * <p>Additional hardening (opt-in via builder methods):
- * <ul>
- *   <li>{@link #withRetry(int, long)} — retry transient failures with exponential backoff.</li>
- *   <li>{@link #withTimeout(int, int)} — connect &amp; read timeouts (avoids 30s+ hangs).</li>
- *   <li>{@link #withTlsPinning(java.util.List)} — pin server cert SHA-256 fingerprints.</li>
- *   <li>{@link #withMetadataAugmentation(boolean)} — auto-append machine + jar fingerprint to metadata.</li>
- * </ul>
- *
- * <p>For offline grace cache + heartbeat, use the companion class {@link HardenedNxGate}.
  */
 public class NxGate {
 
@@ -42,7 +30,6 @@ public class NxGate {
     private boolean useChallenges = false;
     private boolean debug = false;
 
-    // Hardening options (all opt-in; defaults match original library behavior)
     private int maxAttempts = 1;
     private long initialBackoffMs = 1000L;
     private int connectTimeoutMs = 10000;
@@ -50,162 +37,83 @@ public class NxGate {
     private boolean augmentMetadata = false;
     private java.util.List<String> pinnedSha256 = null;
 
-    /**
-     * Create a new NxGate instance with your user ID.
-     *
-     * @param userId The user ID of the license owner's NxGate account.
-     */
     public NxGate(String userId) {
         this.userId = userId;
     }
 
-    /**
-     * Create a new NxGate instance with your user ID and public RSA key.
-     * Using this constructor enables the use of challenges for added security
-     * (recommended for client-side verification).
-     *
-     * @param userId       The user ID of the license owner's NxGate account.
-     * @param publicRsaKey The public RSA key of the license owner's NxGate account.
-     */
     public NxGate(String userId, String publicRsaKey) {
         this.userId = userId;
         this.publicRsaKey = publicRsaKey;
         this.useChallenges = true;
     }
 
-    /**
-     * Set the public RSA key of the license owner's NxGate account.
-     *
-     * @param publicRsaKey The public RSA key of the license owner's NxGate account.
-     * @return The NxGate instance.
-     */
     public NxGate setPublicRsaKey(String publicRsaKey) {
         this.publicRsaKey = publicRsaKey;
         return this;
     }
 
-    /**
-     * Set the validation server URL.
-     * Use this method to set the URL of your self-hosted NxGate server.
-     * Default: NxGate cloud server
-     * Example: "https://license.yourdomain.com"
-     *
-     * @param validationServer The URL of the validation server.
-     * @return The NxGate instance.
-     */
     public NxGate setValidationServer(String validationServer) {
         this.validationServer = validationServer;
         return this;
     }
 
-    /**
-     * Enable the use and verification of challenges.
-     *
-     * @return The NxGate instance.
-     */
     public NxGate useChallenges() {
         useChallenges = true;
         return this;
     }
 
-    /**
-     * Enable debug mode to print request, response and error information to the console.
-     *
-     * @return The NxGate instance.
-     */
     public NxGate debug() {
         debug = true;
         return this;
     }
 
-    // ---------------- Hardening builder methods ----------------
-
-    /**
-     * Enable automatic retry of transient failures (CONNECTION_ERROR / SERVER_ERROR).
-     * Backoff is exponential (factor 3): e.g. attempts=3, backoff=1000ms → waits 1s, 3s.
-     *
-     * @param attempts  total attempts including the first (>=1).
-     * @param backoffMs initial backoff in milliseconds.
-     * @return The NxGate instance.
-     */
     public NxGate withRetry(int attempts, long backoffMs) {
         this.maxAttempts = Math.max(1, attempts);
         this.initialBackoffMs = Math.max(0, backoffMs);
         return this;
     }
 
-    /**
-     * Set HTTP timeouts. Default is 10s/10s. Lower values = faster failure detection.
-     *
-     * @param connectMs connect timeout in milliseconds.
-     * @param readMs    read timeout in milliseconds.
-     * @return The NxGate instance.
-     */
     public NxGate withTimeout(int connectMs, int readMs) {
         this.connectTimeoutMs = connectMs;
         this.readTimeoutMs = readMs;
         return this;
     }
 
-    /**
-     * When enabled, the metadata string sent to the server is augmented with
-     * {@code machineFp=...;jarFp=...} so admins can detect tampering / cloned hardware.
-     * If you also pass your own metadata, both are merged with a {@code ;} separator.
-     *
-     * @param enable whether to enable metadata augmentation.
-     * @return The NxGate instance.
-     */
     public NxGate withMetadataAugmentation(boolean enable) {
         this.augmentMetadata = enable;
         return this;
     }
 
-    /**
-     * Pin one or more server certificate SHA-256 fingerprints (hex, no colons).
-     * Connections whose leaf certificate doesn't match any pin are rejected as CONNECTION_ERROR.
-     * Defeats network MITM attacks (e.g. Burp / mitmproxy) that bypass the license check.
-     *
-     * @param sha256Fingerprints list of SHA-256 hex fingerprints to pin.
-     * @return The NxGate instance.
-     */
     public NxGate withTlsPinning(java.util.List<String> sha256Fingerprints) {
         this.pinnedSha256 = sha256Fingerprints;
         return this;
     }
 
-    // ---------------- Verify methods (original API preserved) ----------------
+    // ---- verify overloads ----
 
-    /**
-     * Verify a license key.
-     *
-     * @param licenseKey The license key to verify.
-     * @return The validation result.
-     */
     public ValidationType verify(String licenseKey) {
-        return verify(licenseKey, null, null);
+        return verify(licenseKey, null, null, null);
     }
 
-    /**
-     * Verify a license key with a specific scope.
-     *
-     * @param licenseKey The license key to verify.
-     * @param scope      The scope to verify the license key against.
-     * @return The validation result.
-     */
     public ValidationType verify(String licenseKey, String scope) {
-        return verify(licenseKey, scope, null);
+        return verify(licenseKey, scope, null, null);
+    }
+
+    public ValidationType verify(String licenseKey, String scope, String metadata) {
+        return verify(licenseKey, scope, metadata, null);
     }
 
     /**
-     * Verify a license key with a specific scope and metadata that should be associated
-     * with the verification request.
+     * Verify a license key with scope, metadata, and product slug.
      *
-     * @param licenseKey The license key to verify.
-     * @param scope      The scope to verify the license key against.
-     * @param metadata   The metadata to associate with the verification request.
+     * @param licenseKey  The license key to verify.
+     * @param scope       The scope to verify against (nullable).
+     * @param metadata    Metadata to associate with the request (nullable).
+     * @param productSlug The product slug this license should be restricted to (nullable).
+     *                    If the license is not assigned to this product, server returns PRODUCT_MISMATCH.
      * @return The validation result.
      */
-    public ValidationType verify(String licenseKey, String scope, String metadata) {
+    public ValidationType verify(String licenseKey, String scope, String metadata, String productSlug) {
         if (augmentMetadata) {
             String aug = "machineFp=" + Fingerprints.machine() + ";jarFp=" + Fingerprints.callerJar();
             metadata = (metadata == null || metadata.isEmpty()) ? aug : (metadata + ";" + aug);
@@ -214,7 +122,7 @@ public class NxGate {
         long backoff = initialBackoffMs;
         ValidationType last = ValidationType.CONNECTION_ERROR;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            last = verifyOnce(licenseKey, scope, metadata);
+            last = verifyOnce(licenseKey, scope, metadata, productSlug);
             if (last != ValidationType.CONNECTION_ERROR && last != ValidationType.SERVER_ERROR) {
                 return last;
             }
@@ -229,12 +137,12 @@ public class NxGate {
         return last;
     }
 
-    private ValidationType verifyOnce(String licenseKey, String scope, String metadata) {
+    private ValidationType verifyOnce(String licenseKey, String scope, String metadata, String productSlug) {
         try {
             String challenge = this.useChallenges
                     ? System.currentTimeMillis() + "-" + java.util.UUID.randomUUID()
                     : null;
-            JSONObject response = requestServer(buildUrl(licenseKey, scope, metadata, challenge));
+            JSONObject response = requestServer(buildUrl(licenseKey, scope, metadata, challenge, productSlug));
 
             if (response.has("error") || !response.has("result")) {
                 if (debug) System.out.println("[NxGate] Error: " + response.optString("error", "no result"));
@@ -264,43 +172,36 @@ public class NxGate {
         }
     }
 
-    /**
-     * Verify a license key and return a boolean indicating whether the license key is valid.
-     *
-     * @param licenseKey The license key to verify.
-     * @return True if the license key is valid, false otherwise.
-     */
+    // ---- verifySimple overloads ----
+
     public boolean verifySimple(String licenseKey) {
         return verify(licenseKey) == ValidationType.VALID;
     }
 
-    /**
-     * Verify a license key with a specific scope and return a boolean indicating whether
-     * the license key is valid.
-     *
-     * @param licenseKey The license key to verify.
-     * @param scope      The scope to verify the license key against.
-     * @return True if the license key is valid, false otherwise.
-     */
     public boolean verifySimple(String licenseKey, String scope) {
         return verify(licenseKey, scope) == ValidationType.VALID;
     }
 
-    /**
-     * Verify a license key with a specific scope and metadata.
-     *
-     * @param licenseKey The license key to verify.
-     * @param scope      The scope to verify the license key against.
-     * @param metadata   The metadata to associate with the verification request.
-     * @return True if the license key is valid, false otherwise.
-     */
     public boolean verifySimple(String licenseKey, String scope, String metadata) {
         return verify(licenseKey, scope, metadata) == ValidationType.VALID;
     }
 
-    // ---------------- Internals ----------------
+    /**
+     * Verify a license key and return true if VALID.
+     *
+     * @param licenseKey  The license key to verify.
+     * @param scope       The scope to verify against (nullable).
+     * @param metadata    Metadata to associate with the request (nullable).
+     * @param productSlug The product slug to restrict verification to (nullable).
+     * @return True if the license key is valid.
+     */
+    public boolean verifySimple(String licenseKey, String scope, String metadata, String productSlug) {
+        return verify(licenseKey, scope, metadata, productSlug) == ValidationType.VALID;
+    }
 
-    private String buildUrl(String licenseKey, String scope, String metadata, String challenge)
+    // ---- Internals ----
+
+    private String buildUrl(String licenseKey, String scope, String metadata, String challenge, String productSlug)
             throws UnsupportedEncodingException {
         StringBuilder qs = new StringBuilder();
         if (metadata != null) {
@@ -309,6 +210,10 @@ public class NxGate {
         if (scope != null) {
             qs.append(qs.length() == 0 ? "?" : "&")
               .append("scope=").append(URLEncoder.encode(scope, StandardCharsets.UTF_8.name()));
+        }
+        if (productSlug != null) {
+            qs.append(qs.length() == 0 ? "?" : "&")
+              .append("productSlug=").append(URLEncoder.encode(productSlug, StandardCharsets.UTF_8.name()));
         }
         if (useChallenges && challenge != null) {
             qs.append(qs.length() == 0 ? "?" : "&")
@@ -392,32 +297,17 @@ public class NxGate {
         return sb.toString();
     }
 
-    /**
-     * The result of a license verification.
-     * Most of these types are the same as the ones returned by the NxGate server.
-     * Check the official documentation for more information.
-     * <ul>
-     *   <li>CONNECTION_ERROR: The request to the NxGate server failed.</li>
-     *   <li>SERVER_ERROR: The NxGate server returned an invalid response.</li>
-     *   <li>FAILED_CHALLENGE: The challenge verification failed.</li>
-     * </ul>
-     */
     public enum ValidationType {
 
         VALID(true), NOT_FOUND, NOT_ACTIVE, EXPIRED, LICENSE_SCOPE_FAILED,
-        IP_LIMIT_EXCEEDED, RATE_LIMIT_EXCEEDED, FAILED_CHALLENGE,
-        SERVER_ERROR, CONNECTION_ERROR;
+        IP_LIMIT_EXCEEDED, RATE_LIMIT_EXCEEDED, PRODUCT_MISMATCH,
+        FAILED_CHALLENGE, SERVER_ERROR, CONNECTION_ERROR;
 
         private final boolean valid;
 
         ValidationType(boolean valid) { this.valid = valid; }
         ValidationType() { this(false); }
 
-        /**
-         * Returns whether the result is valid. This is true for VALID and false for all other types.
-         *
-         * @return Whether the result is valid.
-         */
         public boolean isValid() { return valid; }
     }
 }

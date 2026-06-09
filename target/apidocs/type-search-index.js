@@ -1,1 +1,0 @@
-typeSearchIndex = [{"l":"All Classes and Interfaces","u":"allclasses-index.html"},{"p":"xyz.noxlydev.nxgate","l":"HardenedNxGate.Builder"},{"p":"xyz.noxlydev.nxgate","l":"Fingerprints"},{"p":"xyz.noxlydev.nxgate","l":"HardenedNxGate"},{"p":"xyz.noxlydev.nxgate","l":"NxGate"},{"p":"xyz.noxlydev.nxgate","l":"NxGate.ValidationType"}];updateSearchResults();
