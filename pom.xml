@@ -6,7 +6,7 @@
 
     <groupId>xyz.noxlydev.nxgate</groupId>
     <artifactId>nxgate</artifactId>
-    <version>1.0.7</version>
+    <version>1.0.8</version>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -51,19 +51,98 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!--
+                NxGate is a thin jar (no shade needed — org.json stays a
+                normal transitive Maven dependency for consumers), so unlike
+                the Paper/Fabric NoxAeApi builds there's no separate "shade
+                first, then obfuscate" step: ProGuard runs directly on this
+                module's own jar output in the same 'package' phase.
+
+                includeDependency (default true for this goal) adds
+                compile-scope deps — i.e. org.json:json — as -libraryjars
+                automatically, so ProGuard can resolve JSONObject references
+                without us listing the jar path by hand.
+
+                attach (default true) replaces the project's main artifact
+                with the obfuscated jar, so `mvn deploy` publishes the
+                obfuscated jar to repo.noxlydev.xyz as nxgate-1.0.7.jar —
+                the pre-obfuscation jar is kept alongside as
+                nxgate-1.0.7_proguard_base.jar for your own reference/debug,
+                not published. Double check this is actually what you want
+                before your next release: consumers currently compile
+                against the CURRENT (unobfuscated) jar's exact API — see
+                proguard-nxgate.pro for what's being kept intact so that
+                stays true after this change.
+            -->
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-source-plugin</artifactId>
-                <version>3.2.1</version>
+                <groupId>com.github.wvengen</groupId>
+                <artifactId>proguard-maven-plugin</artifactId>
+                <version>2.6.1</version>
                 <executions>
                     <execution>
-                        <id>attach-sources</id>
+                        <phase>package</phase>
                         <goals>
-                            <goal>jar</goal>
+                            <goal>proguard</goal>
                         </goals>
                     </execution>
                 </executions>
+                <configuration>
+                    <proguardInclude>${project.basedir}/proguard-nxgate.pro</proguardInclude>
+                    <libs>
+                        <lib>${java.home}/jmods/java.base.jmod</lib>
+                        <lib>${java.home}/jmods/java.logging.jmod</lib>
+                    </libs>
+                    <options>
+                        <option>-ignorewarnings</option>
+                    </options>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.guardsquare</groupId>
+                        <artifactId>proguard-base</artifactId>
+                        <version>7.4.2</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.guardsquare</groupId>
+                        <artifactId>proguard-core</artifactId>
+                        <version>9.1.4</version>
+                    </dependency>
+                </dependencies>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>dev</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.2.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>dev-deploy</id>
+            <distributionManagement>
+                <repository>
+                    <id>reposilite</id>
+                    <name>NxGate Development</name>
+                    <url>https://repo.noxlydev.xyz/development</url>
+                </repository>
+            </distributionManagement>
+        </profile>
+    </profiles>
 </project>
