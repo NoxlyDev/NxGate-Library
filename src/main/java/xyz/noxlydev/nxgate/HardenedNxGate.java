@@ -39,6 +39,7 @@ import java.util.logging.Logger;
  *     .userId("16777218")
  *     .publicKey(PUBLIC_KEY_PEM)
  *     .scope("MyPlugin")
+ *     .productSlug("my-plugin-slug")
  *     .serverUrl("https://api.nxgate.noxlydev.xyz")
  *     .cacheDir(getDataFolder())
  *     .gracePeriod(24, TimeUnit.HOURS)
@@ -60,6 +61,7 @@ public class HardenedNxGate {
     private final String userId;
     private final String publicKey;
     private final String scope;
+    private final String productSlug;
     private final String serverUrl;
     private final File cacheFile;
     private final long gracePeriodMs;
@@ -80,6 +82,7 @@ public class HardenedNxGate {
         this.userId = b.userId;
         this.publicKey = b.publicKey;
         this.scope = b.scope;
+        this.productSlug = b.productSlug;
         this.serverUrl = b.serverUrl;
         this.cacheFile = new File(b.cacheDir, ".nxgate-cache");
         this.gracePeriodMs = b.gracePeriodMs;
@@ -109,7 +112,7 @@ public class HardenedNxGate {
 
         NxGate gate = buildGate();
 
-        NxGate.ValidationType result = gate.verify(licenseKey, scope);
+        NxGate.ValidationType result = gate.verify(licenseKey, scope, null, productSlug);
         lastResult = result;
 
         if (result == NxGate.ValidationType.VALID) {
@@ -154,7 +157,7 @@ public class HardenedNxGate {
             try {
                 NxGate gate = buildGate();
 
-                NxGate.ValidationType r = gate.verify(licenseKeySupplier.get(), scope);
+                NxGate.ValidationType r = gate.verify(licenseKeySupplier.get(), scope, null, productSlug);
                 lastResult = r;
                 if (r == NxGate.ValidationType.VALID) {
                     writeCache(System.currentTimeMillis());
@@ -235,7 +238,7 @@ public class HardenedNxGate {
     }
 
     private String hmacHex(String data) throws Exception {
-        String secret = userId + "|" + scope + "|" + Fingerprints.machine() + "|" + Fingerprints.callerJar() + "|nxgate-cache-v1";
+        String secret = userId + "|" + scope + "|" + (productSlug != null ? productSlug : "") + "|" + Fingerprints.machine() + "|" + Fingerprints.callerJar() + "|nxgate-cache-v1";
         byte[] key = Fingerprints.sha256(secret.getBytes(StandardCharsets.UTF_8));
         Mac m = Mac.getInstance("HmacSHA256");
         m.init(new SecretKeySpec(key, "HmacSHA256"));
@@ -255,6 +258,7 @@ public class HardenedNxGate {
         private String userId;
         private String publicKey;
         private String scope;
+        private String productSlug;
         private String serverUrl = "https://api.nxgate.noxlydev.xyz";
         private File cacheDir = new File(".");
         private long gracePeriodMs = TimeUnit.HOURS.toMillis(24);
@@ -269,6 +273,7 @@ public class HardenedNxGate {
         public Builder userId(String v) { this.userId = v; return this; }
         public Builder publicKey(String v) { this.publicKey = v; return this; }
         public Builder scope(String v) { this.scope = v; return this; }
+        public Builder productSlug(String v) { this.productSlug = v; return this; }
         public Builder serverUrl(String v) { this.serverUrl = v; return this; }
         public Builder cacheDir(File v) { this.cacheDir = v; return this; }
         public Builder gracePeriod(long amt, TimeUnit unit) { this.gracePeriodMs = unit.toMillis(amt); return this; }
