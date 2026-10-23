@@ -28,6 +28,13 @@
 -dontoptimize
 -dontshrink
 
+# Java 25 tidak kompatibel dengan ProGuard 7.x (class version 69 > max 65/67).
+# Solusi: skip loading library runtime dari jmod, cukup rely pada classpath yang
+# sudah ada. Tambahkan -dontskipnonpubliclibraryclasses untuk menghindari crash
+# saat class hierarchy tidak lengkap.
+-dontskipnonpubliclibraryclasses
+-dontskipnonpubliclibraryclassmembers
+
 # ---- PUBLIC API — HARUS tetap sama persis (dipakai proyek lain) ----
 
 -keep public class xyz.noxlydev.nxgate.NxGate {

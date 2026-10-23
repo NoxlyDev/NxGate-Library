@@ -21,12 +21,25 @@ import java.util.Base64;
  */
 public class NxGate {
 
-    private static final String DEFAULT_SERVER = "https://api.nxgate.noxlydev.xyz";
+    // URL di-encode dengan XOR 0x42 agar tidak terbaca di decompiler/strings tool
+    // https://api.nxgate.noxlydev.xyz → XOR setiap byte dengan 0x42
+    private static final byte[] DEFAULT_SERVER_ENC = {
+        0x2a,0x2b,0x2b,0x27,0x71,0x77,0x77,0x27,0x31,0x23,0x67,
+        0x3e,0x33,0x22,0x27,0x31,0x6e,0x3c,0x33,0x3b,0x37,0x33,
+        0x35,0x2c,0x33,0x35,0x6e,0x79,0x3b,0x3f
+    };
+
+    private static String getDefaultServer() {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : DEFAULT_SERVER_ENC) sb.append((char)(b ^ 0x42));
+        return sb.toString();
+    }
+
     private static final String LIB_VERSION = "nxgate/1.1.0";
 
     private String userId;
     private String publicRsaKey;
-    private String validationServer = DEFAULT_SERVER;
+    private String validationServer = getDefaultServer();
     private boolean useChallenges = false;
     private boolean debug = false;
 

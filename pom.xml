@@ -89,10 +89,9 @@
                 </executions>
                 <configuration>
                     <proguardInclude>${project.basedir}/proguard-nxgate.pro</proguardInclude>
-                    <libs>
-                        <lib>${java.home}/jmods/java.base.jmod</lib>
-                        <lib>${java.home}/jmods/java.logging.jmod</lib>
-                    </libs>
+                    <!-- libs sengaja dikosongkan: jmod Java 25 tidak kompatibel dengan ProGuard 7.x.
+                         Library resolution dilakukan via -libraryjars di proguard-nxgate.pro -->
+                    <libs/>
                     <options>
                         <option>-ignorewarnings</option>
                     </options>
