@@ -64,6 +64,7 @@ public class HardenedNxGate {
     private final String productSlug;
     private final String serverUrl;
     private final File cacheFile;
+    private final File hwidCacheFile;
     private final long gracePeriodMs;
     private final long heartbeatMs;
     private final int retries;
@@ -85,6 +86,7 @@ public class HardenedNxGate {
         this.productSlug = b.productSlug;
         this.serverUrl = b.serverUrl;
         this.cacheFile = new File(b.cacheDir, ".nxgate-cache");
+        this.hwidCacheFile = new File(b.cacheDir, ".nxgate-hwid-cache");
         this.gracePeriodMs = b.gracePeriodMs;
         this.heartbeatMs = b.heartbeatMs;
         this.retries = b.retries;
@@ -143,6 +145,48 @@ public class HardenedNxGate {
 
         licenseValid = false;
         return false;
+    }
+
+    /**
+     * Perform synchronous hardware-bound cryptographic handshake.
+     * Returns a valid {@link HandshakeResult} containing the derived AES key if successful,
+     * or uses cached keys if running within the grace window during server outage.
+     */
+    public HandshakeResult handshakeBlocking(String licenseKey) {
+        if (licenseKey == null || licenseKey.trim().isEmpty()) {
+            licenseValid = false;
+            lastResult = NxGate.ValidationType.NOT_FOUND;
+            logger.severe("[NxGate] No license key configured for handshake.");
+            return HandshakeResult.failure(NxGate.ValidationType.NOT_FOUND, "Missing license key");
+        }
+
+        NxGate gate = buildGate();
+        HandshakeResult result = gate.handshake(licenseKey, productSlug, scope);
+        lastResult = result.getStatus();
+
+        if (result.isValid()) {
+            writeHwidCache(result);
+            licenseValid = true;
+            logger.info("[NxGate] Handshake SUCCESS. Cryptographic core bound to HWID.");
+            return result;
+        }
+
+        if (result.getStatus() == NxGate.ValidationType.CONNECTION_ERROR || result.getStatus() == NxGate.ValidationType.SERVER_ERROR) {
+            HandshakeResult cached = readHwidCache();
+            if (cached != null) {
+                logger.warning("[NxGate] " + result.getStatus() + " — running handshake in offline grace period.");
+                licenseValid = true;
+                return cached;
+            } else {
+                logger.severe("[NxGate] No valid offline cryptographic cache. Cannot start core.");
+            }
+        } else {
+            logger.severe("[NxGate] Handshake INVALID: " + result.getStatus() + " (" + result.getMessage() + ")");
+            invalidateHwidCache();
+        }
+
+        licenseValid = false;
+        return result;
     }
 
     /** Begin background re-verification at the configured interval. Idempotent. */
@@ -235,6 +279,87 @@ public class HardenedNxGate {
 
     private void invalidateCache() {
         try { if (cacheFile.exists()) cacheFile.delete(); } catch (Exception ignored) {}
+    }
+
+    private void writeHwidCache(HandshakeResult res) {
+        if (res.getRealAesKey() == null || res.getIv() == null) return;
+        try {
+            long ts = System.currentTimeMillis();
+            String hwid = HWIDProvider.getHWID();
+            String jar = Fingerprints.callerJar();
+            String keyHex = NxGate.toHex(res.getRealAesKey());
+            String ivHex = NxGate.toHex(res.getIv());
+            String sessionToken = res.getSessionToken() != null ? res.getSessionToken() : "";
+            String payload = ts + "|" + hwid + "|" + jar + "|" + keyHex + "|" + ivHex + "|" + sessionToken;
+            String mac = hmacHwidHex(payload);
+            String content = payload + "|" + mac;
+            hwidCacheFile.getParentFile().mkdirs();
+            Files.write(hwidCacheFile.toPath(), content.getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (Exception ignored) {}
+    }
+
+    private HandshakeResult readHwidCache() {
+        try {
+            if (!hwidCacheFile.exists()) return null;
+            if (hwidCacheFile.length() > 2048) {
+                logger.warning("[NxGate] HWID cache file unexpectedly large — ignoring.");
+                return null;
+            }
+            String content = new String(Files.readAllBytes(hwidCacheFile.toPath()), StandardCharsets.UTF_8).trim();
+            String[] p = content.split("\\|");
+            if (p.length != 7) return null;
+            long ts = Long.parseLong(p[0]);
+            String hwid = p[1], jar = p[2], keyHex = p[3], ivHex = p[4], sessionToken = p[5], mac = p[6];
+
+            if (!HWIDProvider.getHWID().equals(hwid)) {
+                logger.warning("[NxGate] HWID cache machine ID mismatch — ignoring.");
+                return null;
+            }
+            if (!Fingerprints.callerJar().equals(jar)) {
+                logger.warning("[NxGate] HWID cache jar mismatch — ignoring.");
+                return null;
+            }
+            String expectedPayload = ts + "|" + hwid + "|" + jar + "|" + keyHex + "|" + ivHex + "|" + sessionToken;
+            if (!constEq(hmacHwidHex(expectedPayload), mac)) {
+                logger.warning("[NxGate] HWID cache HMAC invalid — tampering suspected.");
+                return null;
+            }
+            long age = System.currentTimeMillis() - ts;
+            if (age >= gracePeriodMs) {
+                logger.severe("[NxGate] HWID cache expired.");
+                return null;
+            }
+
+            byte[] realKey = NxGate.fromHex(keyHex);
+            byte[] iv = NxGate.fromHex(ivHex);
+            return new HandshakeResult(
+                true,
+                NxGate.ValidationType.VALID,
+                "Loaded from valid offline HWID cache",
+                null,
+                null,
+                (int) TimeUnit.MILLISECONDS.toHours(gracePeriodMs - age),
+                realKey,
+                iv,
+                sessionToken,
+                true
+            );
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void invalidateHwidCache() {
+        try { if (hwidCacheFile.exists()) hwidCacheFile.delete(); } catch (Exception ignored) {}
+    }
+
+    private String hmacHwidHex(String data) throws Exception {
+        String secret = userId + "|" + scope + "|" + (productSlug != null ? productSlug : "") + "|" + HWIDProvider.getHWID() + "|" + Fingerprints.callerJar() + "|nxgate-hwid-cache-v2";
+        byte[] key = Fingerprints.sha256(secret.getBytes(StandardCharsets.UTF_8));
+        Mac m = Mac.getInstance("HmacSHA256");
+        m.init(new SecretKeySpec(key, "HmacSHA256"));
+        return NxGate.toHex(m.doFinal(data.getBytes(StandardCharsets.UTF_8)));
     }
 
     private String hmacHex(String data) throws Exception {

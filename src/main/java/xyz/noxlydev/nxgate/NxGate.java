@@ -212,6 +212,198 @@ public class NxGate {
         return verify(licenseKey, scope, metadata, productSlug) == ValidationType.VALID;
     }
 
+    // ---- Cryptographic HWID Handshake (v2) ----
+
+    /**
+     * Perform cryptographic hardware-bound handshake.
+     * Derives real AES key using client HWID XOR masked server payload.
+     */
+    public HandshakeResult handshake(String licenseKey, String productSlug, String scope) {
+        if (licenseKey == null || licenseKey.trim().isEmpty()) {
+            return HandshakeResult.failure(ValidationType.NOT_FOUND, "License key is required");
+        }
+
+        String hwid = HWIDProvider.getHWID();
+        String nonce = System.currentTimeMillis() + ":" + java.util.UUID.randomUUID().toString();
+
+        long backoff = initialBackoffMs;
+        HandshakeResult last = HandshakeResult.failure(ValidationType.CONNECTION_ERROR, "Connection error");
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            last = handshakeOnce(licenseKey, productSlug, scope, hwid, nonce);
+            if (last.getStatus() != ValidationType.CONNECTION_ERROR && last.getStatus() != ValidationType.SERVER_ERROR) {
+                return last;
+            }
+            if (attempt < maxAttempts) {
+                try {
+                    Thread.sleep(backoff);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return last;
+                }
+                backoff *= 3;
+            }
+        }
+        return last;
+    }
+
+    private HandshakeResult handshakeOnce(String licenseKey, String productSlug, String scope, String hwid, String nonce) {
+        try {
+            String urlStr = validationServer + "/license/" + userId + "/" + licenseKey + "/handshake";
+            JSONObject body = new JSONObject();
+            body.put("hwid", hwid);
+            body.put("nonce", nonce);
+            if (productSlug != null) body.put("productSlug", productSlug);
+            if (scope != null) body.put("scope", scope);
+            body.put("clientVersion", LIB_VERSION);
+
+            JSONObject meta = new JSONObject();
+            meta.put("os", System.getProperty("os.name"));
+            meta.put("arch", System.getProperty("os.arch"));
+            body.put("metadata", meta);
+
+            JSONObject resp = postJsonServer(urlStr, body);
+            if (resp == null) {
+                return HandshakeResult.failure(ValidationType.SERVER_ERROR, "Empty server response");
+            }
+
+            String statusStr = resp.optString("status", resp.optString("result", "SERVER_ERROR"));
+            ValidationType status;
+            try {
+                status = ValidationType.valueOf(statusStr);
+            } catch (Exception e) {
+                status = ValidationType.SERVER_ERROR;
+            }
+
+            if (status != ValidationType.VALID) {
+                return HandshakeResult.failure(status, resp.optString("message", "Validation failed: " + status));
+            }
+
+            // Verify RSA signed nonce if public key configured
+            if (publicRsaKey != null && !publicRsaKey.isEmpty()) {
+                String signedNonce = resp.optString("signedNonce", null);
+                if (signedNonce == null || !verifyChallenge(nonce, signedNonce)) {
+                    if (debug) System.out.println("[NxGate] Handshake signed nonce verification failed!");
+                    return HandshakeResult.failure(ValidationType.FAILED_CHALLENGE, "Nonce signature mismatch");
+                }
+            }
+
+            // Unmask crypto payload
+            JSONObject crypto = resp.optJSONObject("cryptoPayload");
+            if (crypto == null || !crypto.has("hwidMaskedKey") || !crypto.has("iv")) {
+                return HandshakeResult.failure(ValidationType.SERVER_ERROR, "Missing crypto payload");
+            }
+
+            String maskedHex = crypto.getString("hwidMaskedKey");
+            String ivHex = crypto.getString("iv");
+            String sessionToken = crypto.optString("sessionToken", "");
+
+            byte[] hwidDigest = HWIDProvider.getHWIDBytes();
+            byte[] maskedBytes = fromHex(maskedHex);
+            if (maskedBytes.length != 16) {
+                return HandshakeResult.failure(ValidationType.SERVER_ERROR, "Invalid masked key length");
+            }
+
+            byte[] realKey = new byte[16];
+            for (int i = 0; i < 16; i++) {
+                realKey[i] = (byte) (maskedBytes[i] ^ hwidDigest[i]);
+            }
+
+            byte[] ivBytes = fromHex(ivHex);
+            String expiresAt = resp.optString("expiresAt", null);
+            int graceHours = resp.optInt("gracePeriodHours", 48);
+
+            return new HandshakeResult(
+                true,
+                ValidationType.VALID,
+                resp.optString("message", "Handshake success"),
+                resp.optString("signedNonce", null),
+                expiresAt,
+                graceHours,
+                realKey,
+                ivBytes,
+                sessionToken,
+                false
+            );
+        } catch (IOException e) {
+            if (debug) e.printStackTrace();
+            return HandshakeResult.failure(ValidationType.CONNECTION_ERROR, e.getMessage());
+        } catch (Exception e) {
+            if (debug) e.printStackTrace();
+            return HandshakeResult.failure(ValidationType.SERVER_ERROR, e.getMessage());
+        }
+    }
+
+    private void applyTlsPinningIfNeeded(HttpURLConnection con) throws IOException {
+        if (pinnedSha256 != null && !pinnedSha256.isEmpty() && con instanceof javax.net.ssl.HttpsURLConnection) {
+            try {
+                javax.net.ssl.HttpsURLConnection https = (javax.net.ssl.HttpsURLConnection) con;
+                https.connect();
+                java.security.cert.Certificate[] certs = https.getServerCertificates();
+                if (certs.length == 0) throw new IOException("no server certs");
+                byte[] sha = java.security.MessageDigest.getInstance("SHA-256").digest(certs[0].getEncoded());
+                String hex = toHex(sha);
+                boolean ok = false;
+                for (String pin : pinnedSha256) {
+                    if (pin.replace(":", "").equalsIgnoreCase(hex)) { ok = true; break; }
+                }
+                if (!ok) {
+                    if (debug) System.out.println("[NxGate] TLS pin mismatch. Got " + hex);
+                    con.disconnect();
+                    throw new IOException("TLS pin mismatch");
+                }
+            } catch (java.security.GeneralSecurityException gse) {
+                con.disconnect();
+                throw new IOException(gse);
+            }
+        }
+    }
+
+    private JSONObject postJsonServer(String urlStr, JSONObject payload) throws IOException {
+        URL url = new URL(urlStr);
+        HttpURLConnection con = (HttpURLConnection) url.openConnection();
+        con.setRequestMethod("POST");
+        con.setRequestProperty("User-Agent", LIB_VERSION);
+        con.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+        con.setRequestProperty("Accept", "application/json");
+        con.setDoOutput(true);
+        con.setConnectTimeout(connectTimeoutMs);
+        con.setReadTimeout(readTimeoutMs);
+
+        applyTlsPinningIfNeeded(con);
+
+        byte[] input = payload.toString().getBytes(StandardCharsets.UTF_8);
+        try (java.io.OutputStream os = con.getOutputStream()) {
+            os.write(input, 0, input.length);
+        }
+
+        int code = con.getResponseCode();
+        java.io.InputStream is = (code >= 200 && code < 400) ? con.getInputStream() : con.getErrorStream();
+        if (is == null) {
+            return null;
+        }
+
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = in.readLine()) != null) sb.append(line);
+            String body = sb.toString();
+            if (debug) System.out.println("[NxGate] Handshake Response (" + code + "): " + body);
+            return new JSONObject(body);
+        }
+    }
+
+    public static byte[] fromHex(String hex) {
+        if (hex == null || (hex.length() % 2) != 0) return new byte[0];
+        int len = hex.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
+                                 + Character.digit(hex.charAt(i + 1), 16));
+        }
+        return data;
+    }
+
     // ---- Internals ----
 
     private String buildUrl(String licenseKey, String scope, String metadata, String challenge, String productSlug)

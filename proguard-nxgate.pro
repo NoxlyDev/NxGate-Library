@@ -57,6 +57,16 @@
     public *;
 }
 
+-keep public class xyz.noxlydev.nxgate.HWIDProvider {
+    public *;
+    protected *;
+}
+
+-keep public class xyz.noxlydev.nxgate.HandshakeResult {
+    public *;
+    protected *;
+}
+
 # ---- Field private, method helper private (buildUrl, requestServer,
 # verifyChallenge, hmacHex, readCache/writeCache, constEq, dst.) TIDAK
 # di-keep secara eksplisit di atas — otomatis boleh di-rename ProGuard
