@@ -33,7 +33,7 @@ Tambahkan repository dan dependency:
 <dependency>
     <groupId>xyz.noxlydev.nxgate</groupId>
     <artifactId>nxgate</artifactId>
-    <version>1.0.8</version>
+    <version>1.0.10</version>
 </dependency>
 ```
 
@@ -44,7 +44,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'xyz.noxlydev.nxgate:nxgate:1.0.8'
+    implementation 'xyz.noxlydev.nxgate:nxgate:1.0.10'
 }
 ```
 
